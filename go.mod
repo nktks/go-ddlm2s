@@ -13,4 +13,4 @@ require (
 	golang.org/x/text v0.3.2 // indirect
 )
 
-replace github.com/knocknote/vitess-sqlparser => github.com/nakatamixi/vitess-sqlparser v0.0.0-20191009110808-66fc15dbe6be
+replace github.com/knocknote/vitess-sqlparser => github.com/nakatamixi/vitess-sqlparser v0.0.0-20191012104442-c5a166b73608

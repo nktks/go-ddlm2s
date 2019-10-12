@@ -9,13 +9,6 @@ import (
 	"github.com/knocknote/vitess-sqlparser/sqlparser"
 )
 
-type Index struct {
-	Name      string
-	TableName string
-	Keys      []string
-	Unique    bool
-}
-
 func Convert(sqls string, debug bool) {
 	for _, sql := range strings.Split(sqls, ";") {
 		convert(sql, debug)
@@ -36,74 +29,15 @@ func convert(sql string, debug bool) {
 		pp.Print(stmtC)
 	}
 	tableName := fmt.Sprintf("%s", stmtC.DDL.NewName.Name)
-	stmtC.Options = []*sqlparser.TableOption{}
-	var columns []*sqlparser.ColumnDef
-	for _, column := range stmtC.Columns {
-		if column.Name == "id" {
-			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
-		}
-		var options []*sqlparser.ColumnOption
-		for _, option := range column.Options {
-			// TODO to index column attribute (ie. UNIQUE)
-			if option.Type == sqlparser.ColumnOptionAutoIncrement {
-				continue
-			}
-			if option.Type == sqlparser.ColumnOptionDefaultValue {
-				continue
-			}
-			options = append(options, option)
-		}
-		column.Options = options
-		column.Type = convertType(column.Type)
-		columns = append(columns, column)
-	}
-	stmtC.Columns = columns
-	var constraints []*sqlparser.Constraint
-	var indices []Index
-	// spanner table has only one InterLeave.
-	// ddlm2s convert first fk to interleave clause.
-	var interleavedFk *sqlparser.Constraint
-	for _, constraint := range stmtC.Constraints {
-		switch constraint.Type {
-		case sqlparser.ConstraintPrimaryKey:
-			keys := []sqlparser.ColIdent{}
-			for _, key := range constraint.Keys {
-				strKey := fmt.Sprintf("%v", key)
-				if strKey == "id" {
-					keys = append(keys, sqlparser.NewColIdent(fmt.Sprintf("%s_id", inflection.Singular(tableName))))
-				} else {
-					keys = append(keys, key)
-				}
-			}
-			constraint.Keys = keys
-		case sqlparser.ConstraintKey, sqlparser.ConstraintIndex, sqlparser.ConstraintUniq, sqlparser.ConstraintUniqKey, sqlparser.ConstraintUniqIndex:
-			indices = append(indices, NewIndex(constraint, tableName))
-			continue
-		case sqlparser.ConstraintForeignKey:
-			if interleavedFk != nil {
-				continue
-			}
-			interleavedFk = constraint
-
-			constraint = &sqlparser.Constraint{
-				Type: sqlparser.ConstraintInterleave,
-				Name: constraint.Reference.Name,
-				Keys: []sqlparser.ColIdent{},
-			}
-		case sqlparser.ConstraintFulltext:
-			panic("spanner dont support FULLTEXT")
-		}
-
-		constraints = append(constraints, constraint)
-	}
-	constraints = updatePrimaryKeyByInterleave(constraints, interleavedFk)
+	stmtC.Columns = updateColumns(stmtC.Columns, tableName)
+	constraints, indices := updateConstraints(stmtC.Constraints, tableName)
 	stmtC.Constraints = constraints
 	if debug {
 		fmt.Println("------------------------after-----------------------------")
 		pp.Print(stmtC)
 	}
 	tbuf := sqlparser.NewTrackedBuffer(func(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {})
-	stmt.Format(tbuf)
+	stmtC.SpannerFormat(tbuf)
 	fmt.Printf("%s;\n", string(tbuf.Buffer.String()))
 
 	for _, index := range indices {
@@ -138,17 +72,41 @@ func convertType(mysqlType string) string {
 	if mysqlType == "datetime" || mysqlType == "timestamp" {
 		return "TIMESTAMP"
 	}
-	if strings.HasPrefix(mysqlType, "char") || strings.HasPrefix(mysqlType, "var") {
-		return "STRING"
+	if strings.HasPrefix(mysqlType, "char") {
+		return buildSppnerTypeWithLength(mysqlType, "char", "STRING", 1)
 	}
-	if strings.HasPrefix(mysqlType, "binary") || strings.HasPrefix(mysqlType, "varbinary") || strings.HasPrefix(mysqlType, "blob") || strings.HasPrefix(mysqlType, "tinyblob") {
-		return "BYTES"
+	if strings.HasPrefix(mysqlType, "varchar") {
+		return buildSppnerTypeWithLength(mysqlType, "varchar", "STRING", 1)
 	}
-	if strings.HasPrefix(mysqlType, "text") || strings.HasPrefix(mysqlType, "tinytext") || strings.HasPrefix(mysqlType, "enum") {
-		return "STRING"
+	if strings.HasPrefix(mysqlType, "binary") {
+		return buildSppnerTypeWithLength(mysqlType, "binary", "BYTES", 1)
+	}
+	if strings.HasPrefix(mysqlType, "varbinary") {
+		return buildSppnerTypeWithLength(mysqlType, "varbinary", "BYTES", 1)
+	}
+	if strings.HasPrefix(mysqlType, "blob") {
+		return buildSppnerTypeWithLength(mysqlType, "blob", "BYTES", 65535)
+	}
+	if strings.HasPrefix(mysqlType, "tinyblob") {
+		return buildSppnerTypeWithLength(mysqlType, "blob", "BYTES", 255)
+	}
+	if strings.HasPrefix(mysqlType, "text") {
+		return buildSppnerTypeWithLength(mysqlType, "text", "STRING", 65535)
+	}
+	if strings.HasPrefix(mysqlType, "tinytext") {
+		return buildSppnerTypeWithLength(mysqlType, "text", "STRING", 255)
+	}
+	if strings.HasPrefix(mysqlType, "enum") {
+		// mysql does not have explicit enum element size limt.
+		// https://dev.mysql.com/doc/refman/5.6/ja/limits-frm-file.html
+		// this size is my temporary
+		return "STRING(5)"
 	}
 	if strings.HasPrefix(mysqlType, "set") {
-		return "ARRAY<STRING>"
+		// mysql does not have explicit set element size limt.
+		// https://dev.mysql.com/doc/refman/5.6/ja/limits-frm-file.html
+		// this size is my temporary
+		return "ARRAY<STRING(5)>"
 	}
 	if strings.HasPrefix(mysqlType, "longblob") || strings.HasPrefix(mysqlType, "mediumblob") {
 		panic("spanner dont support large blob.please use gcs and have uri column.")
@@ -163,30 +121,79 @@ func convertType(mysqlType string) string {
 	return ""
 }
 
-func NewIndex(constraints *sqlparser.Constraint, tableName string) Index {
-	keys := []string{}
-	for _, key := range constraints.Keys {
-		keys = append(keys, fmt.Sprintf("%v", key))
-	}
-	return Index{
-		Name:      constraints.Name,
-		TableName: tableName,
-		Keys:      keys,
-		Unique:    constraints.Type == sqlparser.ConstraintUniq || constraints.Type == sqlparser.ConstraintUniqKey || constraints.Type == sqlparser.ConstraintUniqIndex,
+func buildSppnerTypeWithLength(orgType, mysqlBaseType, spannerBaseType string, mysqlDefaultLength int) string {
+	if strings.Contains(orgType, "(") {
+		return strings.Replace(orgType, mysqlBaseType, spannerBaseType, 1)
+	} else {
+		return fmt.Sprintf("%s(%d)", spannerBaseType, mysqlDefaultLength)
 	}
 }
 
-// https://cloud.google.com/spanner/docs/data-definition-language?hl=ja#index_statements
-func (index Index) CreateDdl() string {
-	uniqOption := ""
-	if index.Unique {
-		uniqOption = "UNIQUE"
+func updateColumns(columns []*sqlparser.ColumnDef, tableName string) []*sqlparser.ColumnDef {
+	var newColumns []*sqlparser.ColumnDef
+	for _, column := range columns {
+		if column.Name == "id" {
+			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
+		}
+		var options []*sqlparser.ColumnOption
+		for _, option := range column.Options {
+			// TODO to index column attribute (ie. UNIQUE)
+			if option.Type == sqlparser.ColumnOptionAutoIncrement {
+				continue
+			}
+			if option.Type == sqlparser.ColumnOptionDefaultValue {
+				continue
+			}
+			options = append(options, option)
+		}
+		column.Options = options
+		column.Type = convertType(column.Type)
+		newColumns = append(newColumns, column)
 	}
-	indexName := index.Name
-	if indexName == "" {
-		indexName = fmt.Sprintf("%s_%s", index.TableName, strings.Join(index.Keys, "_"))
+	return newColumns
+}
+
+func updateConstraints(constraints []*sqlparser.Constraint, tableName string) ([]*sqlparser.Constraint, []Index) {
+	var newConstraints []*sqlparser.Constraint
+	var indices []Index
+	// spanner table has only one InterLeave.
+	// ddlm2s convert first fk to interleave clause.
+	var interleavedFk *sqlparser.Constraint
+	for _, constraint := range constraints {
+		switch constraint.Type {
+		case sqlparser.ConstraintPrimaryKey:
+			keys := []sqlparser.ColIdent{}
+			for _, key := range constraint.Keys {
+				strKey := fmt.Sprintf("%v", key)
+				if strKey == "id" {
+					keys = append(keys, sqlparser.NewColIdent(fmt.Sprintf("%s_id", inflection.Singular(tableName))))
+				} else {
+					keys = append(keys, key)
+				}
+			}
+			constraint.Keys = keys
+		case sqlparser.ConstraintKey, sqlparser.ConstraintIndex, sqlparser.ConstraintUniq, sqlparser.ConstraintUniqKey, sqlparser.ConstraintUniqIndex:
+			indices = append(indices, NewIndex(constraint, tableName))
+			continue
+		case sqlparser.ConstraintForeignKey:
+			if interleavedFk != nil {
+				continue
+			}
+			interleavedFk = constraint
+
+			constraint = &sqlparser.Constraint{
+				Type: sqlparser.ConstraintInterleave,
+				Name: constraint.Reference.Name,
+				Keys: []sqlparser.ColIdent{},
+			}
+		case sqlparser.ConstraintFulltext:
+			panic("spanner dont support FULLTEXT")
+		}
+
+		newConstraints = append(newConstraints, constraint)
 	}
-	return fmt.Sprintf("CREATE %s INDEX %s ON %s (%s);", uniqOption, index.Name, index.TableName, strings.Join(index.Keys, ", "))
+	newConstraints = updatePrimaryKeyByInterleave(newConstraints, interleavedFk)
+	return newConstraints, indices
 }
 
 func updatePrimaryKeyByInterleave(constraints []*sqlparser.Constraint, interleave *sqlparser.Constraint) []*sqlparser.Constraint {
