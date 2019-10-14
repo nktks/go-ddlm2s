@@ -17,7 +17,7 @@ https://cloud.google.com/solutions/migrating-mysql-to-spanner?hl=ja#supported_da
 - convert column data type.
 - ddlm2s donot support many other case...
   - ddlm2s only support create table list.
-  - ddlm2s does not sort table list. if foreigin key child table exists first, converted ddl will fail in spanner.
+  - interleave needs parent primary key define. so ddlm2s needs all parent create table ddls for having foreign keys table ddl.
 
 # example
 ```

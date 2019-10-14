@@ -2,6 +2,7 @@ package ddlm2s
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -9,15 +10,120 @@ import (
 	"github.com/knocknote/vitess-sqlparser/sqlparser"
 )
 
-func Convert(sqls string, debug bool) {
-	for _, sql := range strings.Split(sqls, ";") {
-		convert(sql, debug)
+type CreateStatements []*CreateStatement
+
+func (all CreateStatements) findBy(tableName string) *CreateStatement {
+	for _, c := range all {
+		if fmt.Sprintf("%s", c.stmt.DDL.NewName.Name) == tableName {
+			return c
+		}
+	}
+	panic("cant find stmt by tablename")
+}
+
+type CreateStatement struct {
+	stmt    *sqlparser.CreateTable
+	indices []Index
+}
+
+func (c *CreateStatement) Print(debug bool) {
+	if debug {
+		fmt.Println("------------------------after-----------------------------")
+		pp.Print(c.stmt)
+	}
+	tbuf := sqlparser.NewTrackedBuffer(func(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {})
+	c.stmt.SpannerFormat(tbuf)
+	fmt.Printf("%s;\n", string(tbuf.Buffer.String()))
+
+	for _, index := range c.indices {
+		fmt.Println(index.CreateDdl())
 	}
 }
-func convert(sql string, debug bool) {
+
+func (c *CreateStatement) InterLeaveDepth(all CreateStatements) int {
+	depth := 0
+	parent := c.GetInterleaveParentStatement(all)
+	if parent != nil {
+		depth += 1
+		depth += parent.InterLeaveDepth(all)
+	}
+	return depth
+}
+
+func (c *CreateStatement) GetInterleaveParentStatement(all CreateStatements) *CreateStatement {
+	for _, constraint := range c.stmt.Constraints {
+		if constraint.Type == sqlparser.ConstraintInterleave {
+			return all.findBy(constraint.Name)
+		}
+	}
+	return nil
+}
+func (c *CreateStatement) GetPrimaryKey() *sqlparser.Constraint {
+	for _, constraint := range c.stmt.Constraints {
+		if constraint.Type == sqlparser.ConstraintPrimaryKey {
+			return constraint
+		}
+	}
+	return nil
+}
+
+func (c *CreateStatement) GetColumns(colKeys []sqlparser.ColIdent) []*sqlparser.ColumnDef {
+	var defs []*sqlparser.ColumnDef
+	for _, key := range colKeys {
+		strKey := fmt.Sprintf("%v", key)
+
+		for _, c := range c.stmt.Columns {
+			if c.Name == strKey {
+				defs = append(defs, c)
+				continue
+			}
+		}
+	}
+	return defs
+}
+
+func (c *CreateStatement) updatePrimaryKeyByInterleaveParent(all CreateStatements) {
+	parent := c.GetInterleaveParentStatement(all)
+	if parent == nil {
+		return
+	}
+	var newConstraints []*sqlparser.Constraint
+	for _, constraint := range c.stmt.Constraints {
+		if constraint.Type == sqlparser.ConstraintPrimaryKey {
+			constraint.Keys = append(parent.GetPrimaryKey().Keys, constraint.Keys...)
+		}
+		newConstraints = append(newConstraints, constraint)
+	}
+	c.stmt.Constraints = newConstraints
+	if c.InterLeaveDepth(all) > 1 {
+		pks := c.GetPrimaryKey().Keys
+		lackedPks := pks[:len(pks)-2]
+		lackedColumns := parent.GetColumns(lackedPks)
+		c.stmt.Columns = append(lackedColumns, c.stmt.Columns...)
+	}
+
+}
+
+func Convert(sqls string, debug bool) {
+	var all CreateStatements
+	for _, sql := range strings.Split(sqls, ";") {
+		c := convert(sql, debug)
+		if c != nil {
+			all = append(all, c)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].InterLeaveDepth(all) < all[j].InterLeaveDepth(all) })
+	var updatedAll CreateStatements
+	for _, c := range all {
+		c.updatePrimaryKeyByInterleaveParent(updatedAll)
+		updatedAll = append(updatedAll, c)
+		c.Print(debug)
+	}
+}
+func convert(sql string, debug bool) *CreateStatement {
 	sql = strings.Replace(sql, "\n", "", -1)
 	if sql == "" {
-		return
+		return nil
 	}
 	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
@@ -32,16 +138,9 @@ func convert(sql string, debug bool) {
 	stmtC.Columns = updateColumns(stmtC.Columns, tableName)
 	constraints, indices := updateConstraints(stmtC.Constraints, tableName)
 	stmtC.Constraints = constraints
-	if debug {
-		fmt.Println("------------------------after-----------------------------")
-		pp.Print(stmtC)
-	}
-	tbuf := sqlparser.NewTrackedBuffer(func(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {})
-	stmtC.SpannerFormat(tbuf)
-	fmt.Printf("%s;\n", string(tbuf.Buffer.String()))
-
-	for _, index := range indices {
-		fmt.Println(index.CreateDdl())
+	return &CreateStatement{
+		stmt:    stmtC,
+		indices: indices,
 	}
 }
 
@@ -192,21 +291,5 @@ func updateConstraints(constraints []*sqlparser.Constraint, tableName string) ([
 
 		newConstraints = append(newConstraints, constraint)
 	}
-	newConstraints = updatePrimaryKeyByInterleave(newConstraints, interleavedFk)
 	return newConstraints, indices
-}
-
-func updatePrimaryKeyByInterleave(constraints []*sqlparser.Constraint, interleave *sqlparser.Constraint) []*sqlparser.Constraint {
-	if interleave == nil {
-		return constraints
-	}
-	var newConstraints []*sqlparser.Constraint
-	for _, constraint := range constraints {
-		if constraint.Type == sqlparser.ConstraintPrimaryKey {
-			constraint.Keys = append(interleave.Keys, constraint.Keys...)
-		}
-		newConstraints = append(newConstraints, constraint)
-	}
-	return newConstraints
-
 }
