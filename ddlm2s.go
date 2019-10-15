@@ -104,23 +104,27 @@ func (c *CreateStatement) updatePrimaryKeyByInterleaveParent(all CreateStatement
 
 }
 
-func Convert(sqls string, debug bool) {
+func Convert(sqls string, debug, enableInterleave bool) {
 	var all CreateStatements
 	for _, sql := range strings.Split(sqls, ";") {
-		c := convert(sql, debug)
+		c := convert(sql, debug, enableInterleave)
 		if c != nil {
 			all = append(all, c)
 		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].InterLeaveDepth(all) < all[j].InterLeaveDepth(all) })
+	if enableInterleave {
+		sort.Slice(all, func(i, j int) bool { return all[i].InterLeaveDepth(all) < all[j].InterLeaveDepth(all) })
+	}
 	var updatedAll CreateStatements
 	for _, c := range all {
-		c.updatePrimaryKeyByInterleaveParent(updatedAll)
+		if enableInterleave {
+			c.updatePrimaryKeyByInterleaveParent(updatedAll)
+		}
 		updatedAll = append(updatedAll, c)
 		c.Print(debug)
 	}
 }
-func convert(sql string, debug bool) *CreateStatement {
+func convert(sql string, debug, enableInterleave bool) *CreateStatement {
 	sql = strings.Replace(sql, "\n", "", -1)
 	if sql == "" {
 		return nil
@@ -136,7 +140,7 @@ func convert(sql string, debug bool) *CreateStatement {
 	}
 	tableName := fmt.Sprintf("%s", stmtC.DDL.NewName.Name)
 	stmtC.Columns = updateColumns(stmtC.Columns, tableName)
-	constraints, indices := updateConstraints(stmtC.Constraints, tableName)
+	constraints, indices := updateConstraints(stmtC.Constraints, tableName, enableInterleave)
 	stmtC.Constraints = constraints
 	return &CreateStatement{
 		stmt:    stmtC,
@@ -231,9 +235,6 @@ func buildSppnerTypeWithLength(orgType, mysqlBaseType, spannerBaseType string, m
 func updateColumns(columns []*sqlparser.ColumnDef, tableName string) []*sqlparser.ColumnDef {
 	var newColumns []*sqlparser.ColumnDef
 	for _, column := range columns {
-		if column.Name == "id" {
-			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
-		}
 		var options []*sqlparser.ColumnOption
 		for _, option := range column.Options {
 			// TODO to index column attribute (ie. UNIQUE)
@@ -246,13 +247,18 @@ func updateColumns(columns []*sqlparser.ColumnDef, tableName string) []*sqlparse
 			options = append(options, option)
 		}
 		column.Options = options
-		column.Type = convertType(column.Type)
+		if column.Name == "id" {
+			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
+			column.Type = "STRING(36)" // use for UUID https://tools.ietf.org/html/rfc4122
+		} else {
+			column.Type = convertType(column.Type)
+		}
 		newColumns = append(newColumns, column)
 	}
 	return newColumns
 }
 
-func updateConstraints(constraints []*sqlparser.Constraint, tableName string) ([]*sqlparser.Constraint, []Index) {
+func updateConstraints(constraints []*sqlparser.Constraint, tableName string, enableInterleave bool) ([]*sqlparser.Constraint, []Index) {
 	var newConstraints []*sqlparser.Constraint
 	var indices []Index
 	// spanner table has only one InterLeave.
@@ -275,6 +281,9 @@ func updateConstraints(constraints []*sqlparser.Constraint, tableName string) ([
 			indices = append(indices, NewIndex(constraint, tableName))
 			continue
 		case sqlparser.ConstraintForeignKey:
+			if !enableInterleave {
+				continue
+			}
 			if interleavedFk != nil {
 				continue
 			}

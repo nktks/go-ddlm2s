@@ -10,12 +10,14 @@ import (
 
 func main() {
 	var (
-		file  string
-		debug bool
+		file             string
+		debug            bool
+		enableInterleave bool
 	)
 	flags := flag.NewFlagSet("", flag.ContinueOnError)
 	flags.StringVar(&file, "f", "", "sql file path")
 	flags.BoolVar(&debug, "d", false, "debug print")
+	flags.BoolVar(&enableInterleave, "interleave", true, "convert fk to interleave")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		flags.Usage()
 		return
@@ -28,7 +30,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	ddlm2s.Convert(body, debug)
+	ddlm2s.Convert(body, debug, enableInterleave)
 }
 
 func read(file string) (string, error) {
