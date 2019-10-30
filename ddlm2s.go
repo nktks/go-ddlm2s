@@ -139,7 +139,7 @@ func convert(sql string, debug, enableInterleave bool) *CreateStatement {
 		pp.Print(stmtC)
 	}
 	tableName := fmt.Sprintf("%s", stmtC.DDL.NewName.Name)
-	stmtC.Columns = updateColumns(stmtC.Columns, tableName)
+	stmtC.Columns = updateColumns(stmtC, tableName)
 	constraints, indices := updateConstraints(stmtC.Constraints, tableName, enableInterleave)
 	stmtC.Constraints = constraints
 	return &CreateStatement{
@@ -232,7 +232,8 @@ func buildSppnerTypeWithLength(orgType, mysqlBaseType, spannerBaseType string, m
 	}
 }
 
-func updateColumns(columns []*sqlparser.ColumnDef, tableName string) []*sqlparser.ColumnDef {
+func updateColumns(stmt *sqlparser.CreateTable, tableName string) []*sqlparser.ColumnDef {
+	columns := stmt.Columns
 	var newColumns []*sqlparser.ColumnDef
 	for _, column := range columns {
 		var options []*sqlparser.ColumnOption
@@ -250,12 +251,34 @@ func updateColumns(columns []*sqlparser.ColumnDef, tableName string) []*sqlparse
 		if column.Name == "id" {
 			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
 			column.Type = "STRING(36)" // use for UUID https://tools.ietf.org/html/rfc4122
+		} else if isPkForeiginKey(column, stmt) {
+			column.Type = "STRING(36)" // use for UUID https://tools.ietf.org/html/rfc4122
 		} else {
 			column.Type = convertType(column.Type)
 		}
 		newColumns = append(newColumns, column)
 	}
 	return newColumns
+}
+
+func isPkForeiginKey(column *sqlparser.ColumnDef, stmt *sqlparser.CreateTable) bool {
+	for _, constraint := range stmt.Constraints {
+		if constraint.Type == sqlparser.ConstraintForeignKey {
+			for _, key := range constraint.Keys {
+				strKey := fmt.Sprintf("%v", key)
+				if strKey == column.Name {
+					for _, rkey := range constraint.Reference.Keys {
+						strRKey := fmt.Sprintf("%v", rkey)
+						if strRKey == "id" {
+							return true
+						}
+					}
+				}
+			}
+		}
+
+	}
+	return false
 }
 
 func updateConstraints(constraints []*sqlparser.Constraint, tableName string, enableInterleave bool) ([]*sqlparser.Constraint, []Index) {
