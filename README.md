@@ -43,6 +43,8 @@ CREATE TABLE `friends` (
   CONSTRAINT `fk_friends_users_1` FOREIGN KEY (`user_id`)   REFERENCES `users` (`id`),
   CONSTRAINT `fk_friends_users_2` FOREIGN KEY (`to_id`) REFERENCES `users` (`id`)
 ) ENGINE = InnoDB, DEFAULT CHARACTER SET = utf8mb4;
+
+```
 ```
 go run cmd/ddlm2s/main.go -f sample.sql
 CREATE TABLE `users` (
