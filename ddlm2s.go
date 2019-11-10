@@ -286,6 +286,7 @@ func updateConstraints(constraints []*sqlparser.Constraint, tableName string, en
 	var indices []Index
 	// spanner table has only one InterLeave.
 	// ddlm2s convert first fk to interleave clause.
+	// other fk converted to index.
 	var interleavedFk *sqlparser.Constraint
 CONSTRAINTSFOR:
 	for _, constraint := range constraints {
@@ -309,6 +310,7 @@ CONSTRAINTSFOR:
 				continue
 			}
 			if interleavedFk != nil {
+				indices = append(indices, NewIndex(constraint, tableName))
 				continue
 			}
 			for _, rkey := range constraint.Reference.Keys {

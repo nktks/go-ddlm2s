@@ -20,11 +20,15 @@ func NewIndex(constraints *sqlparser.Constraint, tableName string) Index {
 		keys = append(keys, fmt.Sprintf("%v", key))
 	}
 	return Index{
-		Name:      constraints.Name,
+		Name:      name(keys, tableName),
 		TableName: tableName,
 		Keys:      keys,
 		Unique:    constraints.Type == sqlparser.ConstraintUniq || constraints.Type == sqlparser.ConstraintUniqKey || constraints.Type == sqlparser.ConstraintUniqIndex,
 	}
+}
+
+func name(keys []string, tableName string) string {
+	return fmt.Sprintf("idx_%s_%s", tableName, strings.Join(keys, "_"))
 }
 
 // https://cloud.google.com/spanner/docs/data-definition-language?hl=ja#index_statements
