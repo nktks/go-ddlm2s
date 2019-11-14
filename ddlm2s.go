@@ -156,12 +156,8 @@ func updateColumns(stmt *sqlparser.CreateTable, tableName string) []*sqlparser.C
 		column.Options = options
 		if column.Name == "id" {
 			column.Name = fmt.Sprintf("%s_id", inflection.Singular(tableName))
-			column.Type = "STRING(36)" // use for UUID https://tools.ietf.org/html/rfc4122
-		} else if isPkForeiginKey(column, stmt) {
-			column.Type = "STRING(36)" // use for UUID https://tools.ietf.org/html/rfc4122
-		} else {
-			column.Type = convertType(column.Type)
 		}
+		column.Type = convertType(column.Type)
 		newColumns = append(newColumns, column)
 	}
 	return newColumns
