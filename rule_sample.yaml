@@ -1,0 +1,11 @@
+uncountable:
+  - fish
+irregular:
+  - singular: person
+    plulal: people
+plulal:
+  - from: "(bu)s$"
+    to: "${1}ses"
+singular:
+  - from: "(bus)(es)?$"
+    to:   "${1}"

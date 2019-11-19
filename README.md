@@ -21,7 +21,7 @@ https://cloud.google.com/solutions/migrating-mysql-to-spanner?hl=ja#supported_da
   - interleave needs parent primary key define. so ddlm2s needs all parent create table ddls for having foreign keys table ddl.
 - you need to avoid pk hotspot yourself. so, you need to use varchar(36) (UUID v4 size) for interleave root table pk.
   - https://tools.ietf.org/html/rfc4122
-
+- support https://github.com/jinzhu/inflection#register-rules with -r option(see rule_sample.yaml)
 # example
 ```
 cat sample.sql
